@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>수정체(조절) 시뮬레이터</title>
+  <style>
+    body { background:#0b1020; color:#e6eefc; font-family:sans-serif; margin:0; padding:0; }
+    .wrap{ max-width:900px; margin:0 auto; padding:1rem; }
+    h1{ font-size:1.5rem; }
+    .controls{ display:grid; grid-template-columns:1fr; gap:1rem; margin:1rem 0; }
+    label{ display:block; font-size:0.9rem; margin-bottom:0.2rem; }
+    input[type=range]{ width:100%; }
+    canvas{ width:100%; height:auto; background:#10192a; border-radius:12px; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>수정체(조절) 시뮬레이터</h1>
+    <p>물체거리(do), 초점거리(f), 동공 크기를 바꿔가며 망막면 초점을 관찰하세요. 얇은렌즈 공식 <b>1/f = 1/do + 1/di</b>.</p>
+
+    <div class="controls">
+      <div>
+        <label>물체 거리 do (<span id="doLabel">40</span> cm)</label>
+        <input type="range" id="doRange" min="50" max="2000" step="10" value="400">
+      </div>
+      <div>
+        <label>초점거리 f (<span id="fLabel">22</span> mm)</label>
+        <input type="range" id="fRange" min="15" max="25" step="0.1" value="22">
+      </div>
+      <div>
+        <label>동공 지름 (<span id="pupilLabel">4</span> mm)</label>
+        <input type="range" id="pupilRange" min="1" max="8" step="0.1" value="4">
+      </div>
+    </div>
+
+    <canvas id="cv" width="900" height="400"></canvas>
+    <p id="status"></p>
+  </div>
+
+<script>
+const retinaDistance = 17; // mm
+const lensX = 120; // mm (canvas 좌표계)
+const retinaX = lensX + 200;
+const H = 400, W = 900;
+
+let do_mm = 400; // 물체거리
+let f_mm = 22;   // 초점거리
+let pupilDia = 4;
+
+const cv = document.getElementById("cv");
+const ctx = cv.getContext("2d");
+
+function toPxX(mm){ return mm*1.2; }
+function toPxY(mm){ return H/2 + mm*1.2; }
+
+function draw(){
+  ctx.clearRect(0,0,W,H);
+  ctx.fillStyle="#0b1020";
+  ctx.fillRect(0,0,W,H);
+
+  // 렌즈
+  const lensPxX = toPxX(lensX);
+  ctx.strokeStyle="#66d9ef";
+  ctx.lineWidth=3;
+  ctx.beginPath();
+  ctx.moveTo(lensPxX,20);
+  ctx.lineTo(lensPxX,H-20);
+  ctx.stroke();
+
+  // 망막
+  const retinaPxX = toPxX(retinaX);
+  ctx.strokeStyle="#f97316";
+  ctx.beginPath();
+  ctx.moveTo(retinaPxX,20);
+  ctx.lineTo(retinaPxX,H-20);
+  ctx.stroke();
+
+  // 물체
+  const objectX = lensX - do_mm;
+  const objBaseX = toPxX(objectX);
+  const objTopY = toPxY(-60);
+  const objBaseY = toPxY(0);
+  ctx.strokeStyle="#34d399";
+  ctx.beginPath();
+  ctx.moveTo(objBaseX,objBaseY);
+  ctx.lineTo(objBaseX,objTopY);
+  ctx.stroke();
+
+  // 상거리 계산
+  const inv = 1/f_mm - 1/do_mm;
+  let di = inv>0 ? 1/inv : Infinity;
+  const focusError = di - retinaDistance;
+
+  // 상태 표시
+  const status = document.getElementById("status");
+  status.innerText = `di=${isFinite(di)?di.toFixed(1):"∞"} mm | 초점오차=${focusError.toFixed(2)} mm`;
+
+  // 광선 표시 (간단히 3개)
+  const rayStarts=[-60, -30, -10];
+  for(let ay of rayStarts){
+    const ax = objectX;
+    const m1 = (0-ay)/(lensX-ax);
+    const yAtLens = ay + m1*(lensX-ax);
+
+    const bx=lensX, by=yAtLens;
+    let cx,cy;
+    if(isFinite(di)){
+      cx=lensX+di; cy=ay*(-di/do_mm);
+    }else{ cx=lensX+400; cy=by; }
+    ctx.strokeStyle="#93c5fd";
+    ctx.beginPath(); ctx.moveTo(toPxX(ax),toPxY(ay)); ctx.lineTo(toPxX(bx),toPxY(by)); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(toPxX(bx),toPxY(by)); ctx.lineTo(toPxX(cx),toPxY(cy)); ctx.stroke();
+  }
+
+  // 망막상 (흐림 근사)
+  const magnification = -(isFinite(di)?di/do_mm:0);
+  const imageTopY_mm = -60*magnification;
+  const imgX = retinaPxX;
+  const imgY = toPxY(imageTopY_mm);
+  ctx.fillStyle="rgba(255,255,255,0.8)";
+  const blur = Math.min(20, Math.abs(focusError)*(pupilDia/3)*0.05);
+  ctx.beginPath(); ctx.arc(imgX,imgY,Math.max(3,blur),0,Math.PI*2); ctx.fill();
+}
+
+document.getElementById("doRange").oninput=e=>{do_mm=parseFloat(e.target.value);document.getElementById("doLabel").innerText=(do_mm/10).toFixed(1);draw();};
+document.getElementById("fRange").oninput=e=>{f_mm=parseFloat(e.target.value);document.getElementById("fLabel").innerText=f_mm.toFixed(1);draw();};
+document.getElementById("pupilRange").oninput=e=>{pupilDia=parseFloat(e.target.value);document.getElementById("pupilLabel").innerText=pupilDia.toFixed(1);draw();};
+
+draw();
+</script>
+</body>
+</html>
