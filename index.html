@@ -45,8 +45,8 @@
 <script>
 // --- 고정 파라미터 ---
 const retinaDistance = 17;      // 렌즈 중심→망막(mm)
-const lensX = 120;               // 렌즈 x(mm)
-const retinaX = lensX + 200;     // 망막 x(mm)
+const lensX_base = 120;          // 기본 렌즈 x(mm)
+const retinaX_base = lensX_base + 200; // 기본 망막 x(mm)
 const H = 420, W = 900;
 
 // --- 상태 ---
@@ -62,20 +62,32 @@ function thicknessToF(th){
 const cv = document.getElementById('cv');
 const ctx = cv.getContext('2d');
 
-function toPxX(mm){ return mm*1.2; }
-function toPxY(mm){ return H/2 + mm*1.2; }
+// --- 가변 뷰포트 스케일링 ---
+// 물체가 멀거나 가까워도 "물체~망막" 전 구간이 화면에 들어오도록 X 스케일을 동적으로 조정
+function computeViewport(){
+  const lensX = lensX_base;
+  const retinaX = retinaX_base;
+  const objectX = lensX - do_mm;
+  const minWorldX = Math.min(objectX, lensX);
+  const maxWorldX = retinaX;
+  const margin = 30; // px 좌우 여백
+  const worldSpan = Math.max(40, maxWorldX - minWorldX);
+  const scaleX = (W - 2*margin) / worldSpan; // 동적 가로 스케일
+  const toPxX = (mm)=> margin + (mm - minWorldX) * scaleX;
+  return { lensX, retinaX, objectX, toPxX, minWorldX, maxWorldX, scaleX };
+}
+
+function toPxY(mm){ return H/2 + mm*1.2; } // 세로 스케일은 고정
 
 // 가변 렌즈 형상(두께 시각화): 중심부 허리 두께가 두꺼워질수록 넓게
-function drawLensShape(x, height, th){
-  const px = toPxX(x);
+function drawLensShape(px, th){
   const yTop = 40, yBot = H-40;
-  // 두께 계수: 얇음(0)일 때 10px, 두꺼움(100)일 때 40px
-  const halfW = 10 + (th/100)*30;
+  // 두께 계수: 얇음(0)일 때 5px, 두꺼움(100)일 때 20px  → 기존 대비 50% 축소
+  const halfW = 5 + (th/100)*15;
   ctx.fillStyle = '#0ea5e9';
   ctx.strokeStyle = '#66d9ef';
   ctx.lineWidth = 2;
   ctx.beginPath();
-  // 상단부터 베지어로 좌우 대칭 경계 생성
   ctx.moveTo(px - halfW, yTop);
   ctx.bezierCurveTo(px - halfW*1.6, H*0.35, px - halfW*1.6, H*0.65, px - halfW, yBot);
   ctx.lineTo(px + halfW, yBot);
@@ -98,8 +110,11 @@ function draw(){
   ctx.lineTo(W, toPxY(0));
   ctx.stroke();
 
-  // 렌즈(수정체) 그리기: 두께에 따라 시각적 폭 변화
-  drawLensShape(lensX, 300, thick);
+  // 뷰포트 계산 (동적 X 스케일)
+  const { lensX, retinaX, objectX, toPxX, scaleX } = computeViewport();
+
+  // 렌즈(수정체) 그리기: 두께에 따라 시각적 폭 변화 (50% 축소 적용)
+  drawLensShape(toPxX(lensX), thick);
 
   // 망막면
   const retinaPxX = toPxX(retinaX);
@@ -110,19 +125,19 @@ function draw(){
   ctx.lineTo(retinaPxX, H-20);
   ctx.stroke();
 
-  // 물체(화살표)
-  const objectX = lensX - do_mm;
+  // 물체(화살표) — 50% 축소: 높이 60→30mm
   const objBaseX = toPxX(objectX);
-  const objTopY = toPxY(-60);
+  const objectHeight = 30; // 50% 축소
+  const objTopY = toPxY(-objectHeight);
   const objBaseY = toPxY(0);
   ctx.strokeStyle = '#34d399';
   ctx.lineWidth = 4;
   ctx.beginPath();
   ctx.moveTo(objBaseX, objBaseY);
   ctx.lineTo(objBaseX, objTopY);
-  ctx.lineTo(objBaseX - 12, objTopY + 18);
+  ctx.lineTo(objBaseX - 10, objTopY + 15);
   ctx.moveTo(objBaseX, objTopY);
-  ctx.lineTo(objBaseX + 12, objTopY + 18);
+  ctx.lineTo(objBaseX + 10, objTopY + 15);
   ctx.stroke();
 
   // 굴절 계산
@@ -131,19 +146,19 @@ function draw(){
   const di = inv>0 ? 1/inv : Infinity;
   const focusError = (isFinite(di)?di:retinaDistance) - retinaDistance;
 
-  // 광선 (3개)
-  const rayStarts=[-60,-30,-10];
+  // 광선 (3개) — 꼭짓점 기준, 객체 높이 축소 반영
+  const rayStarts=[-objectHeight, -objectHeight*0.5, -objectHeight*0.2];
   for(const ay of rayStarts){
-    const ax = objectX;                 // 물체 꼭짓점
-    const m1 = (0 - ay)/(lensX - ax);   // 렌즈 중앙을 향하는 입사선 근사
+    const ax = lensX - do_mm;            // 물체 꼭짓점 x (월드)
+    const m1 = (0 - ay)/(lensX - ax);    // 렌즈 중앙을 향하는 입사선 근사
     const yAtLens = ay + m1*(lensX-ax);
 
-    const bx=lensX, by=yAtLens;         // 렌즈 통과점
+    const bx=lensX, by=yAtLens;          // 렌즈 통과점 (월드)
     let cx,cy;
     if(isFinite(di)){
-      cx = lensX + di;                  // 상 위치 x
-      cy = ay * (-di/do_mm);            // 배율 m=-di/do
-    }else{ cx = lensX + 420; cy = by; }
+      cx = lensX + di;                   // 상 위치 x
+      cy = ay * (-di/do_mm);             // 배율 m=-di/do
+    }else{ cx = lensX + 420/ (1.2/scaleX); cy = by; } // 화면 밖까지 적당히
 
     ctx.strokeStyle = '#93c5fd';
     ctx.lineWidth = 2;
@@ -153,8 +168,8 @@ function draw(){
 
   // 망막상(흐림 근사)
   const magnification = -(isFinite(di)?di/do_mm:0);
-  const imageTopY_mm = -60*magnification;
-  const blur = Math.min(22, Math.abs(focusError)*0.06* (1 + (thick/100)*0.2)); // 두꺼워질수록 조리개 효과 감소 약간 반영
+  const imageTopY_mm = -objectHeight*magnification; // 축소 반영
+  const blur = Math.min(22, Math.abs(focusError)*0.06* (1 + (thick/100)*0.2));
   ctx.fillStyle = 'rgba(255,255,255,0.9)';
   ctx.beginPath(); ctx.arc(retinaPxX, toPxY(imageTopY_mm), Math.max(3, blur), 0, Math.PI*2); ctx.fill();
 
