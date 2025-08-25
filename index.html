@@ -5,127 +5,170 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>수정체(조절) 시뮬레이터</title>
   <style>
-    body { background:#0b1020; color:#e6eefc; font-family:sans-serif; margin:0; padding:0; }
-    .wrap{ max-width:900px; margin:0 auto; padding:1rem; }
-    h1{ font-size:1.5rem; }
-    .controls{ display:grid; grid-template-columns:1fr; gap:1rem; margin:1rem 0; }
-    label{ display:block; font-size:0.9rem; margin-bottom:0.2rem; }
-    input[type=range]{ width:100%; }
-    canvas{ width:100%; height:auto; background:#10192a; border-radius:12px; }
+    :root{--bg:#0b1020;--panel:#10192a;--text:#e6eefc;--muted:#9fb5d1;--accent:#6ee7ff;--accent2:#fcae7b}
+    *{box-sizing:border-box}body{background:var(--bg);color:var(--text);font-family:system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,"Helvetica Neue",Arial;margin:0}
+    .wrap{max-width:900px;margin:0 auto;padding:16px}
+    h1{font-size:1.5rem;margin:.2rem 0 .6rem}
+    .controls{display:grid;grid-template-columns:1fr;gap:1rem;margin:1rem 0}
+    .card{background:var(--panel);border-radius:14px;padding:12px;border:1px solid #1c2a43}
+    label{display:flex;justify-content:space-between;align-items:center;font-size:.95rem;margin-bottom:.35rem;color:var(--muted)}
+    .hint{font-size:.8rem;color:var(--muted)}
+    input[type=range]{width:100%}
+    .pill{display:flex;gap:8px;justify-content:space-between;font-size:.85rem;color:var(--muted)}
+    canvas{width:100%;height:auto;background:var(--panel);border-radius:14px;border:1px solid #1c2a43}
+    .status{margin:.6rem 0;color:var(--muted)}
   </style>
 </head>
 <body>
   <div class="wrap">
     <h1>수정체(조절) 시뮬레이터</h1>
-    <p>물체거리(do), 초점거리(f), 동공 크기를 바꿔가며 망막면 초점을 관찰하세요. 얇은렌즈 공식 <b>1/f = 1/do + 1/di</b>.</p>
+    <p class="hint">두 가지 만 조절합니다: <b>물체-눈 거리</b>와 <b>수정체 두께</b>(얇음↔두꺼움). 얇을수록 초점거리 f가 길어지고, 두꺼울수록 짧아집니다. 얇은렌즈 공식 <b>1/f = 1/do + 1/di</b>.</p>
 
     <div class="controls">
-      <div>
-        <label>물체 거리 do (<span id="doLabel">40</span> cm)</label>
+      <div class="card">
+        <label>물체 거리 do <span><b id="doLabel">40.0</b> cm</span></label>
         <input type="range" id="doRange" min="50" max="2000" step="10" value="400">
+        <div class="hint">가까워질수록(작은 값) 더 두꺼운 수정체가 필요합니다.</div>
       </div>
-      <div>
-        <label>초점거리 f (<span id="fLabel">22</span> mm)</label>
-        <input type="range" id="fRange" min="15" max="25" step="0.1" value="22">
-      </div>
-      <div>
-        <label>동공 지름 (<span id="pupilLabel">4</span> mm)</label>
-        <input type="range" id="pupilRange" min="1" max="8" step="0.1" value="4">
+      <div class="card">
+        <label>수정체 두께 <span>얇음 ↔ 두꺼움</span></label>
+        <div class="pill"><span>얇음</span><span>두꺼움</span></div>
+        <input type="range" id="thickRange" min="0" max="100" step="1" value="40" aria-label="수정체 두께">
+        <div class="hint">내부적으로는 두께를 초점거리 f(25→15mm)로 변환해 계산합니다.</div>
       </div>
     </div>
 
-    <canvas id="cv" width="900" height="400"></canvas>
-    <p id="status"></p>
+    <canvas id="cv" width="900" height="420" aria-label="광학 시뮬레이션 캔버스"></canvas>
+    <p class="status" id="status"></p>
   </div>
 
 <script>
-const retinaDistance = 17; // mm
-const lensX = 120; // mm (canvas 좌표계)
-const retinaX = lensX + 200;
-const H = 400, W = 900;
+// --- 고정 파라미터 ---
+const retinaDistance = 17;      // 렌즈 중심→망막(mm)
+const lensX = 120;               // 렌즈 x(mm)
+const retinaX = lensX + 200;     // 망막 x(mm)
+const H = 420, W = 900;
 
-let do_mm = 400; // 물체거리
-let f_mm = 22;   // 초점거리
-let pupilDia = 4;
+// --- 상태 ---
+let do_mm = 400;   // 물체-렌즈 거리(mm)
+let thick = 40;    // 0(얇음) ↔ 100(두꺼움)
 
-const cv = document.getElementById("cv");
-const ctx = cv.getContext("2d");
+// 두께→초점거리(mm) 매핑: 0→25mm, 100→15mm (선형)
+function thicknessToF(th){
+  const f = 25 - (th/100)*(25-15); // 25→15
+  return Math.max(15, Math.min(25, f));
+}
+
+const cv = document.getElementById('cv');
+const ctx = cv.getContext('2d');
 
 function toPxX(mm){ return mm*1.2; }
 function toPxY(mm){ return H/2 + mm*1.2; }
 
+// 가변 렌즈 형상(두께 시각화): 중심부 허리 두께가 두꺼워질수록 넓게
+function drawLensShape(x, height, th){
+  const px = toPxX(x);
+  const yTop = 40, yBot = H-40;
+  // 두께 계수: 얇음(0)일 때 10px, 두꺼움(100)일 때 40px
+  const halfW = 10 + (th/100)*30;
+  ctx.fillStyle = '#0ea5e9';
+  ctx.strokeStyle = '#66d9ef';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  // 상단부터 베지어로 좌우 대칭 경계 생성
+  ctx.moveTo(px - halfW, yTop);
+  ctx.bezierCurveTo(px - halfW*1.6, H*0.35, px - halfW*1.6, H*0.65, px - halfW, yBot);
+  ctx.lineTo(px + halfW, yBot);
+  ctx.bezierCurveTo(px + halfW*1.6, H*0.65, px + halfW*1.6, H*0.35, px + halfW, yTop);
+  ctx.closePath();
+  ctx.fill();
+  ctx.stroke();
+}
+
 function draw(){
   ctx.clearRect(0,0,W,H);
-  ctx.fillStyle="#0b1020";
+  ctx.fillStyle = '#0b1020';
   ctx.fillRect(0,0,W,H);
 
-  // 렌즈
-  const lensPxX = toPxX(lensX);
-  ctx.strokeStyle="#66d9ef";
-  ctx.lineWidth=3;
+  // 기준선
+  ctx.strokeStyle = '#24324b';
+  ctx.lineWidth = 1;
   ctx.beginPath();
-  ctx.moveTo(lensPxX,20);
-  ctx.lineTo(lensPxX,H-20);
+  ctx.moveTo(0, toPxY(0));
+  ctx.lineTo(W, toPxY(0));
   ctx.stroke();
 
-  // 망막
+  // 렌즈(수정체) 그리기: 두께에 따라 시각적 폭 변화
+  drawLensShape(lensX, 300, thick);
+
+  // 망막면
   const retinaPxX = toPxX(retinaX);
-  ctx.strokeStyle="#f97316";
+  ctx.strokeStyle = '#f97316';
+  ctx.lineWidth = 3;
   ctx.beginPath();
-  ctx.moveTo(retinaPxX,20);
-  ctx.lineTo(retinaPxX,H-20);
+  ctx.moveTo(retinaPxX, 20);
+  ctx.lineTo(retinaPxX, H-20);
   ctx.stroke();
 
-  // 물체
+  // 물체(화살표)
   const objectX = lensX - do_mm;
   const objBaseX = toPxX(objectX);
   const objTopY = toPxY(-60);
   const objBaseY = toPxY(0);
-  ctx.strokeStyle="#34d399";
+  ctx.strokeStyle = '#34d399';
+  ctx.lineWidth = 4;
   ctx.beginPath();
-  ctx.moveTo(objBaseX,objBaseY);
-  ctx.lineTo(objBaseX,objTopY);
+  ctx.moveTo(objBaseX, objBaseY);
+  ctx.lineTo(objBaseX, objTopY);
+  ctx.lineTo(objBaseX - 12, objTopY + 18);
+  ctx.moveTo(objBaseX, objTopY);
+  ctx.lineTo(objBaseX + 12, objTopY + 18);
   ctx.stroke();
 
-  // 상거리 계산
+  // 굴절 계산
+  const f_mm = thicknessToF(thick);
   const inv = 1/f_mm - 1/do_mm;
-  let di = inv>0 ? 1/inv : Infinity;
-  const focusError = di - retinaDistance;
+  const di = inv>0 ? 1/inv : Infinity;
+  const focusError = (isFinite(di)?di:retinaDistance) - retinaDistance;
 
-  // 상태 표시
-  const status = document.getElementById("status");
-  status.innerText = `di=${isFinite(di)?di.toFixed(1):"∞"} mm | 초점오차=${focusError.toFixed(2)} mm`;
-
-  // 광선 표시 (간단히 3개)
-  const rayStarts=[-60, -30, -10];
-  for(let ay of rayStarts){
-    const ax = objectX;
-    const m1 = (0-ay)/(lensX-ax);
+  // 광선 (3개)
+  const rayStarts=[-60,-30,-10];
+  for(const ay of rayStarts){
+    const ax = objectX;                 // 물체 꼭짓점
+    const m1 = (0 - ay)/(lensX - ax);   // 렌즈 중앙을 향하는 입사선 근사
     const yAtLens = ay + m1*(lensX-ax);
 
-    const bx=lensX, by=yAtLens;
+    const bx=lensX, by=yAtLens;         // 렌즈 통과점
     let cx,cy;
     if(isFinite(di)){
-      cx=lensX+di; cy=ay*(-di/do_mm);
-    }else{ cx=lensX+400; cy=by; }
-    ctx.strokeStyle="#93c5fd";
-    ctx.beginPath(); ctx.moveTo(toPxX(ax),toPxY(ay)); ctx.lineTo(toPxX(bx),toPxY(by)); ctx.stroke();
-    ctx.beginPath(); ctx.moveTo(toPxX(bx),toPxY(by)); ctx.lineTo(toPxX(cx),toPxY(cy)); ctx.stroke();
+      cx = lensX + di;                  // 상 위치 x
+      cy = ay * (-di/do_mm);            // 배율 m=-di/do
+    }else{ cx = lensX + 420; cy = by; }
+
+    ctx.strokeStyle = '#93c5fd';
+    ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(toPxX(ax), toPxY(ay)); ctx.lineTo(toPxX(bx), toPxY(by)); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(toPxX(bx), toPxY(by)); ctx.lineTo(toPxX(cx), toPxY(cy)); ctx.stroke();
   }
 
-  // 망막상 (흐림 근사)
+  // 망막상(흐림 근사)
   const magnification = -(isFinite(di)?di/do_mm:0);
   const imageTopY_mm = -60*magnification;
-  const imgX = retinaPxX;
-  const imgY = toPxY(imageTopY_mm);
-  ctx.fillStyle="rgba(255,255,255,0.8)";
-  const blur = Math.min(20, Math.abs(focusError)*(pupilDia/3)*0.05);
-  ctx.beginPath(); ctx.arc(imgX,imgY,Math.max(3,blur),0,Math.PI*2); ctx.fill();
+  const blur = Math.min(22, Math.abs(focusError)*0.06* (1 + (thick/100)*0.2)); // 두꺼워질수록 조리개 효과 감소 약간 반영
+  ctx.fillStyle = 'rgba(255,255,255,0.9)';
+  ctx.beginPath(); ctx.arc(retinaPxX, toPxY(imageTopY_mm), Math.max(3, blur), 0, Math.PI*2); ctx.fill();
+
+  // 텍스트 상태
+  const status = document.getElementById('status');
+  status.textContent = `do=${(do_mm/10).toFixed(1)} cm  |  두께 슬라이더=${thick}  |  f≈${thicknessToF(thick).toFixed(1)} mm  |  di=${isFinite(di)?di.toFixed(1):'∞'} mm  |  ${Math.abs(focusError)<0.5?'초점 맞음':(focusError>0?'망막 뒤':'망막 앞')}`;
 }
 
-document.getElementById("doRange").oninput=e=>{do_mm=parseFloat(e.target.value);document.getElementById("doLabel").innerText=(do_mm/10).toFixed(1);draw();};
-document.getElementById("fRange").oninput=e=>{f_mm=parseFloat(e.target.value);document.getElementById("fLabel").innerText=f_mm.toFixed(1);draw();};
-document.getElementById("pupilRange").oninput=e=>{pupilDia=parseFloat(e.target.value);document.getElementById("pupilLabel").innerText=pupilDia.toFixed(1);draw();};
+// 이벤트 바인딩
+const doEl = document.getElementById('doRange');
+const thickEl = document.getElementById('thickRange');
+
+doEl.oninput = (e)=>{ do_mm = parseFloat(e.target.value); document.getElementById('doLabel').textContent = (do_mm/10).toFixed(1); draw(); };
+thickEl.oninput = (e)=>{ thick = parseFloat(e.target.value); draw(); };
 
 draw();
 </script>
